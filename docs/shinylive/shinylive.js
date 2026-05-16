@@ -35970,7 +35970,7 @@ async function runExportedApp({
   appEngine,
   relPath = ""
 }) {
-  const response = await fetch("./app.json");
+  const response = await fetch("./app.json?v=c4dc3b654cac");
   if (!response.ok) {
     throw new Error("HTTP error loading app.json: " + response.status);
   }

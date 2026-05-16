@@ -2204,7 +2204,7 @@ function asgiToRes(res, body) {
 // src/shinylive-sw.ts
 var useCaching = false;
 var cacheName = "::shinyliveServiceworker";
-var version = "v9";
+var version = "v9-c4dc3b654cac";
 function addCoiHeaders(resp) {
   const headers = new Headers(resp.headers);
   headers.set("Cross-Origin-Embedder-Policy", "credentialless");

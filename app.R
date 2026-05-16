@@ -94,6 +94,16 @@ create_plate_template <- function() {
   template
 }
 
+empty_processed_table <- function() {
+  data.frame(
+    Well = character(0),
+    Sample = character(0),
+    Target = character(0),
+    Cq = numeric(0),
+    stringsAsFactors = FALSE
+  )
+}
+
 normalize_plate_for_manual <- function(plate_df) {
   if (!"Plate1" %in% names(plate_df)) {
     return(plate_df)
@@ -126,6 +136,24 @@ get_palette <- function(choice, n, manual_colors) {
   if (n <= 0) {
     return(character(0))
   }
+  normalize_palette <- function(palette, min_n = 20) {
+    palette <- as.character(palette)
+    palette <- palette[!is.na(palette) & nzchar(palette)]
+    if (!length(palette)) {
+      return(c("#ffffff", rep("#d0d0d0", max(min_n - 2, 0)), "#b3b3b3"))
+    }
+    if (length(palette) < min_n) {
+      base_palette <- palette
+      base_palette[1] <- "#ffffff"
+      ramp_n <- min_n - 2
+      ramp <- grDevices::colorRampPalette(base_palette)(ramp_n + 1)[-1]
+      palette <- c("#ffffff", ramp, "#b3b3b3")
+    } else {
+      palette[1] <- "#ffffff"
+      palette[length(palette)] <- "#b3b3b3"
+    }
+    palette
+  }
   palettes <- list(
     grayscale = c(
       "#0d0d0d", "#262626", "#595959", "#7f7f7f",
@@ -142,6 +170,12 @@ get_palette <- function(choice, n, manual_colors) {
     pairs = c(
       "#8fd7d7", "#00b0be", "#ff8ca1", "#f45f74",
       "#bdd373", "#98c127", "#ffcd8e", "#ffb255"
+    ),
+    aesthetic1 = c(
+      "#ffffff", "#a8c3e6", "#F08784", "#A6CDA7", "#D7CE99", "#B1D5CB"
+    ),
+    aesthetic2 = c(
+      "#ffffff", "#F68CB4", "#85BFC0", "#A094BC", "#C4B5D6", "#B6E3F8"
     )
   )
 
@@ -157,6 +191,7 @@ get_palette <- function(choice, n, manual_colors) {
     palette <- palettes$bright
   }
 
+  palette <- normalize_palette(palette, min_n = 20)
   rep(palette, length.out = n)
 }
 
@@ -166,6 +201,17 @@ safe_sd <- function(x) {
     return(NA_real_)
   }
   stats::sd(x)
+}
+
+darken_hex <- function(col, factor = 0.7) {
+  if (is.null(col) || !length(col)) {
+    return(character(0))
+  }
+  rgb <- grDevices::col2rgb(col)
+  rgb <- rgb * factor
+  rgb[rgb < 0] <- 0
+  rgb[rgb > 255] <- 255
+  grDevices::rgb(rgb[1, ], rgb[2, ], rgb[3, ], maxColorValue = 255)
 }
 
 read_cq_data <- function(source) {
@@ -220,10 +266,13 @@ read_plate_map <- function(source) {
     }
     plate <- read.csv(source, stringsAsFactors = FALSE, check.names = FALSE)
   }
+  if (!ncol(plate)) {
+    stop("Plate layout file has no columns.")
+  }
   has_plate1 <- "Plate1" %in% names(plate)
   has_row_type <- all(c("Row", "Type") %in% names(plate))
   if (!has_plate1 && !has_row_type) {
-    stop("Plate layout needs a 'Plate1' column or both 'Row' and 'Type' columns.")
+    names(plate)[1] <- "Plate1"
   }
   plate
 }
@@ -528,13 +577,173 @@ ui <- navbarPage(
           "  border-color: #2D3142;",
           "  color: #1f2230;",
           "}",
+          ".preset-toggle .radio-inline {",
+          "  background-color: #b3b3b3;",
+          "  border: 1px solid #8c8c8c;",
+          "  border-radius: 999px;",
+          "  color: #1f2230;",
+          "  font-weight: 700;",
+          "  letter-spacing: 0.02em;",
+          "  margin-right: 6px;",
+          "  padding: 6px 12px;",
+          "  cursor: pointer;",
+          "  user-select: none;",
+          "}",
+          ".preset-toggle .radio-inline input {",
+          "  margin-right: 6px;",
+          "}",
+          ".preset-toggle .radio-inline.is-selected {",
+          "  background-color: #2D3142;",
+          "  border-color: #2D3142;",
+          "  color: #ffffff;",
+          "}",
+          "#fold_plot img,",
+          "#fold_plot canvas {",
+          "  width: 100% !important;",
+          "  height: 100% !important;",
+          "}",
+          ".code-box {",
+          "  margin-top: 14px;",
+          "}",
+          ".code-box pre {",
+          "  max-height: 280px;",
+          "  overflow: auto;",
+          "  white-space: pre;",
+          "  background-color: #f6f6f6;",
+          "  border-radius: 8px;",
+          "  padding: 10px 12px;",
+          "}",
           "hr {",
           "  border-top: 1px solid rgba(45, 49, 66, 0.2);",
           "}",
           sep = "\n"
         )
       )
-    )
+    ),
+    tags$script(
+      HTML(
+        "$(document).on('change', 'input[name=paper_preset]', function() {",
+        "  var $labels = $('input[name=paper_preset]').closest('label');",
+        "  $labels.removeClass('is-selected');",
+        "  $(this).closest('label').addClass('is-selected');",
+        "});",
+        "$(function(){",
+        "  var $checked = $('input[name=paper_preset]:checked');",
+        "  if ($checked.length) {",
+        "    $checked.closest('label').addClass('is-selected');",
+        "  }",
+        "});"
+      )
+    ),
+    tags$script(
+      HTML(
+        "(function(){",
+        "  function downloadBlob(blob, filename){",
+        "    var link = document.createElement('a');",
+        "    link.href = URL.createObjectURL(blob);",
+        "    link.download = filename;",
+        "    document.body.appendChild(link);",
+        "    link.click();",
+        "    document.body.removeChild(link);",
+        "    setTimeout(function(){ URL.revokeObjectURL(link.href); }, 1000);",
+        "  }",
+        "  function serializeSvg(svg){",
+        "    var serializer = new XMLSerializer();",
+        "    var svgText = serializer.serializeToString(svg);",
+        "    if (!svgText.match(/^<svg[^>]+xmlns=/)) {",
+        "      svgText = svgText.replace('<svg', '<svg xmlns=\"http://www.w3.org/2000/svg\"');",
+        "    }",
+        "    if (!svgText.match(/^<svg[^>]+xmlns:xlink=/)) {",
+        "      svgText = svgText.replace('<svg', '<svg xmlns:xlink=\"http://www.w3.org/1999/xlink\"');",
+        "    }",
+        "    return svgText;",
+        "  }",
+        "  function getPlotNode(){",
+        "    return document.getElementById('fold_plot');",
+        "  }",
+        "  function getSvg(node){",
+        "    return node ? node.querySelector('svg') : null;",
+        "  }",
+        "  function getImg(node){",
+        "    return node ? node.querySelector('img') : null;",
+        "  }",
+        "  function elementSize(el){",
+        "    var rect = el.getBoundingClientRect();",
+        "    var w = el.naturalWidth || el.width || 0;",
+        "    var h = el.naturalHeight || el.height || 0;",
+        "    if ((!w || !h) && el.viewBox && el.viewBox.baseVal) {",
+        "      w = w || el.viewBox.baseVal.width;",
+        "      h = h || el.viewBox.baseVal.height;",
+        "    }",
+        "    if (!w || !h) {",
+        "      w = rect.width;",
+        "      h = rect.height;",
+        "    }",
+        "    return {width: w || 800, height: h || 600};",
+        "  }",
+        "  function svgToImage(svgText, cb){",
+        "    var img = new Image();",
+        "    img.onload = function(){ cb(null, img); };",
+        "    img.onerror = function(){ cb(new Error('Could not load SVG.')); };",
+        "    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);",
+        "  }",
+        "  function imageToCanvas(img, width, height){",
+        "    var canvas = document.createElement('canvas');",
+        "    canvas.width = Math.round(width);",
+        "    canvas.height = Math.round(height);",
+        "    var ctx = canvas.getContext('2d');",
+        "    ctx.drawImage(img, 0, 0, width, height);",
+        "    return canvas;",
+        "  }",
+        "  function downloadPng(){",
+        "    var node = getPlotNode();",
+        "    var svg = getSvg(node);",
+        "    var img = getImg(node);",
+        "    var source = svg || img;",
+        "    if (!source) {",
+        "      alert('Plot not found for export.');",
+        "      return;",
+        "    }",
+        "    var size = elementSize(source);",
+        "    var useImage = function(image){",
+        "      var canvas = imageToCanvas(image, size.width, size.height);",
+        "      canvas.toBlob(function(blob){",
+        "        if (!blob) {",
+        "          alert('Export failed.');",
+        "          return;",
+        "        }",
+        "        downloadBlob(blob, 'qpcr_plot.png');",
+        "      }, 'image/png');",
+        "    };",
+        "    if (svg) {",
+        "      var svgText = serializeSvg(svg);",
+        "      svgToImage(svgText, function(err, image){",
+        "        if (err) {",
+        "          alert('SVG export failed.');",
+        "          return;",
+        "        }",
+        "        useImage(image);",
+        "      });",
+        "    } else if (img) {",
+        "      if (img.complete) {",
+        "        useImage(img);",
+        "      } else {",
+        "        img.onload = function(){ useImage(img); };",
+        "        img.onerror = function(){ alert('Image export failed.'); };",
+        "      }",
+        "    }",
+        "  }",
+        "  document.addEventListener('click', function(evt){",
+        "    var btn = evt.target && evt.target.closest ? evt.target.closest('#download_plot_client') : null;",
+        "    if (btn) {",
+        "      evt.preventDefault();",
+        "      downloadPng();",
+        "    }",
+        "  });",
+        "})();"
+      )
+    ),
+    
   ),
   theme = bslib::bs_theme(bootswatch = "sandstone"),
   tabPanel(
@@ -545,6 +754,7 @@ ui <- navbarPage(
           "Pick a data source below, then upload files or work directly inside the manual entry tables. ",
           "This app works with 96 well format BIORAD Real Time System Quantification Cq Results."
         ),
+        uiOutput("data_error"),
         radioButtons(
           "data_mode",
           label = "Data source",
@@ -658,6 +868,19 @@ ui <- navbarPage(
         div(
           class = "well",
           checkboxGroupInput("target_filter", "Targets to display", choices = NULL),
+          selectizeInput(
+            "sample_order",
+            label = "Sample order (drag to reorder, delete to remove)",
+            choices = character(0),
+            selected = character(0),
+            multiple = TRUE,
+            options = list(
+              plugins = list("drag_drop", "remove_button"),
+              persist = TRUE,
+              create = FALSE,
+              sortField = I("null")
+            )
+          ),
           bslib::navset_card_tab(
             tabPanel(
               "Size",
@@ -668,6 +891,25 @@ ui <- navbarPage(
             ),
             tabPanel(
               "Aesthetics",
+              div(
+                class = "preset-row",
+                strong("Presets"),
+                div(
+                  class = "preset-toggle",
+                  radioButtons(
+                    "paper_preset",
+                    label = NULL,
+                    choices = c(
+                      "Reviewer1" = "paper_ready_1",
+                      "Reviewer2" = "paper_ready_2",
+                      "Reviewer3" = "paper_ready_3"
+                    ),
+                    selected = "paper_ready_1",
+                    inline = TRUE
+                  )
+                )
+              ),
+              tags$br(),
               checkboxInput("show_points", "Show points", value = TRUE),
               sliderInput("point_size", "Point size", min = 1, max = 5, value = 3, step = 0.5),
               sliderInput("jitter_width", "Jitter width", min = 0, max = 0.5, value = 0.25, step = 0.05),
@@ -681,9 +923,11 @@ ui <- navbarPage(
                   "Bright" = "bright",
                   "Muted" = "muted",
                   "Alt Light/Dark Pairs" = "pairs",
+                  "Publish" = "aesthetic1",
+                  "Perish" = "aesthetic2",
                   "Custom manual" = "manual"
                 ),
-                selected = "bright"
+                selected = "aesthetic1"
               ),
               conditionalPanel(
                 condition = "input.palette_choice == 'manual'",
@@ -733,19 +977,26 @@ ui <- navbarPage(
       column(
         width = 6,
         uiOutput("plot_message"),
-        plotOutput("fold_plot", height = "auto")
+        uiOutput("plot_ui")
       ),
       column(
         width = 3,
         div(
           class = "well",
           h4("Download plot"),
-          numericInput("download_width", "Width (in)", value = 7, min = 3, max = 20, step = 0.5),
-          numericInput("download_height", "Height (in)", value = 5, min = 3, max = 20, step = 0.5),
-          numericInput("download_dpi", "DPI (PNG)", value = 300, min = 72, max = 600, step = 25),
-          downloadButton("download_plot_png", "Download PNG"),
-          downloadButton("download_plot_pdf", "Download PDF"),
-          downloadButton("download_plot_svg", "Download SVG")
+          radioButtons(
+            "export_quality",
+            "Render quality",
+            choices = c("Low" = "1", "Medium" = "2", "High" = "3"),
+            selected = "2",
+            inline = TRUE
+          ),
+          actionButton("download_plot_client", "Download PNG", class = "btn-primary")
+        ),
+        div(
+          class = "well code-box",
+          h4("Reproducible ggplot2 code"),
+          verbatimTextOutput("plot_code")
         )
       )
     )
@@ -757,6 +1008,38 @@ server <- function(input, output, session) {
   # Manual entry state
   manual_cq <- reactiveVal(create_cq_template())
   manual_plate <- reactiveVal(create_plate_template())
+  preset_style <- reactiveVal("paper_ready_1")
+  sample_order_state <- reactiveVal(character(0))
+  last_sample_set <- reactiveVal(character(0))
+  data_error_msg <- reactiveVal(NULL)
+
+  apply_paper_ready_preset <- function(choice) {
+    preset_style(choice)
+    updateCheckboxInput(session, "show_points", value = TRUE)
+    updateSliderInput(session, "point_size", value = 4)
+    updateSliderInput(session, "jitter_width", value = 0.12)
+    updateCheckboxInput(session, "show_sample_labels", value = TRUE)
+    updateCheckboxInput(session, "legend_on", value = FALSE)
+    updateSelectInput(session, "theme_choice", selected = "classic")
+    updateSliderInput(session, "base_font_size", value = 16)
+    updateCheckboxInput(session, "rotate_x_labels", value = TRUE)
+    updateSliderInput(session, "x_label_angle", value = 35)
+    updateSliderInput(session, "x_expand", value = 0.35)
+    updateSliderInput(session, "plot_aspect", value = 0.85)
+    updateSliderInput(session, "facet_spacing", value = 0.8)
+  }
+
+  observeEvent(input$paper_preset, {
+    choice <- input$paper_preset
+    if (is.null(choice) || !nzchar(choice)) {
+      return()
+    }
+    apply_paper_ready_preset(choice)
+  }, ignoreInit = TRUE)
+
+  session$onFlushed(function() {
+    apply_paper_ready_preset("paper_ready_1")
+  }, once = TRUE)
 
   observeEvent(input$reset_manual_cq, {
     manual_cq(create_cq_template())
@@ -817,9 +1100,37 @@ server <- function(input, output, session) {
 
   # Derived tables
   processed_wells <- reactive({
-    cq_df <- cq_values()
-    plate_df <- plate_layout()
-    build_full_table(cq_df, plate_df)
+    data_error_msg(NULL)
+    errors <- character(0)
+
+    cq_df <- tryCatch(
+      cq_values(),
+      error = function(e) {
+        errors <<- c(errors, conditionMessage(e))
+        NULL
+      }
+    )
+
+    plate_df <- tryCatch(
+      plate_layout(),
+      error = function(e) {
+        errors <<- c(errors, conditionMessage(e))
+        NULL
+      }
+    )
+
+    if (length(errors)) {
+      data_error_msg(paste(unique(errors), collapse = " "))
+      return(empty_processed_table())
+    }
+
+    tryCatch(
+      build_full_table(cq_df, plate_df),
+      error = function(e) {
+        data_error_msg(conditionMessage(e))
+        empty_processed_table()
+      }
+    )
   })
 
   # Input updates based on processed wells
@@ -858,7 +1169,28 @@ server <- function(input, output, session) {
       updateSelectInput(session, "housekeeping_gene", choices = character(0), selected = NULL)
       updateCheckboxGroupInput(session, "target_filter", choices = character(0), selected = NULL)
     }
+
+    last_samples <- last_sample_set()
+    if (!identical(samples, last_samples)) {
+      sample_order_state(samples)
+      updateSelectizeInput(
+        session,
+        "sample_order",
+        choices = samples,
+        selected = samples,
+        server = FALSE
+      )
+      last_sample_set(samples)
+    }
   }, ignoreNULL = FALSE)
+
+  observeEvent(input$sample_order, {
+    if (is.null(input$sample_order)) {
+      sample_order_state(character(0))
+      return()
+    }
+    sample_order_state(as.character(input$sample_order))
+  }, ignoreInit = TRUE)
 
   fold_results <- reactive({
     data <- processed_wells()
@@ -942,13 +1274,46 @@ server <- function(input, output, session) {
     points <- points_state$data
     validate(need(nrow(summary) > 0, "Select at least one target to display."))
 
-    sample_levels <- levels(summary$Sample)
-    if (is.null(sample_levels) || !length(sample_levels)) {
-      sample_levels <- as.character(sort(unique(summary$Sample)))
+    preset_choice <- preset_style()
+    paper_ready <- !is.null(preset_choice) && preset_choice %in% c("paper_ready_1", "paper_ready_2", "paper_ready_3")
+    paper_ready_2 <- identical(preset_choice, "paper_ready_2")
+    paper_ready_3 <- identical(preset_choice, "paper_ready_3")
+    size_scale <- suppressWarnings(as.numeric(input$export_quality))
+    if (!is.finite(size_scale) || size_scale <= 0) {
+      size_scale <- 1
     }
+    scaled_base_size <- input$base_font_size * size_scale
+    scaled_point_size <- input$point_size * size_scale
+    scaled_stroke <- 0.5 * size_scale
+    available_samples <- as.character(sort(unique(summary$Sample)))
+    sample_levels <- sample_order_state()
+    if (!length(sample_levels)) {
+      sample_levels <- available_samples
+    }
+    if (length(sample_levels)) {
+      summary <- summary[as.character(summary$Sample) %in% sample_levels, , drop = FALSE]
+      points <- points[as.character(points$Sample) %in% sample_levels, , drop = FALSE]
+    }
+    summary$Sample <- factor(as.character(summary$Sample), levels = sample_levels)
+    points$Sample <- factor(as.character(points$Sample), levels = sample_levels)
     manual_colors <- parse_manual_colors(input$manual_palette)
     palette_values <- get_palette(input$palette_choice, length(sample_levels), manual_colors)
     color_values <- setNames(palette_values, sample_levels)
+    fill_values <- color_values
+    point_fill_values <- NULL
+    if (paper_ready) {
+      fill_values <- setNames(as.character(color_values), sample_levels)
+      if (paper_ready_3) {
+        fill_values[] <- "#ffffff"
+      }
+      point_base_colors <- if (paper_ready_3) color_values else fill_values
+      point_fill_values <- setNames(darken_hex(point_base_colors, factor = 0.7), sample_levels)
+      if (paper_ready_2) {
+        point_fill_values[] <- "#ffffff"
+      }
+      summary$bar_fill <- fill_values[as.character(summary$Sample)]
+      points$point_fill <- point_fill_values[as.character(points$Sample)]
+    }
 
     y_limits <- NULL
     if (identical(input$y_limit_mode, "manual")) {
@@ -969,87 +1334,191 @@ server <- function(input, output, session) {
       validate(need(all(log_values > 0), "Log scale requires all fold-change values to be > 0."))
     }
 
+    axis_color <- if (paper_ready) "#000000" else "#222222"
+    axis_line_width <- (if (paper_ready) 0.7 else 0.4) * size_scale
     angle <- if (isTRUE(input$rotate_x_labels)) input$x_label_angle else 0
     x_text <- if (isTRUE(input$show_sample_labels)) {
-      element_text(color = "#222222", angle = angle, hjust = if (angle > 0) 1 else 0.5)
+      element_text(color = axis_color, angle = angle, hjust = if (angle > 0) 1 else 0.5)
     } else {
       element_blank()
     }
     x_ticks <- if (isTRUE(input$show_sample_labels)) {
-      element_line(color = "#222222", linewidth = 0.4)
+      element_line(color = axis_color, linewidth = axis_line_width)
     } else {
       element_blank()
     }
 
+    base_family <- "sans"
     theme_base <- switch(
       input$theme_choice,
-      gray = theme_gray(base_size = input$base_font_size),
-      bw = theme_bw(base_size = input$base_font_size),
-      linedraw = theme_linedraw(base_size = input$base_font_size),
-      light = theme_light(base_size = input$base_font_size),
-      dark = theme_dark(base_size = input$base_font_size),
-      minimal = theme_minimal(base_size = input$base_font_size),
-      classic = theme_classic(base_size = input$base_font_size),
-      void = theme_void(base_size = input$base_font_size),
-      theme_classic(base_size = input$base_font_size)
+      gray = theme_gray(base_size = scaled_base_size, base_family = base_family),
+      bw = theme_bw(base_size = scaled_base_size, base_family = base_family),
+      linedraw = theme_linedraw(base_size = scaled_base_size, base_family = base_family),
+      light = theme_light(base_size = scaled_base_size, base_family = base_family),
+      dark = theme_dark(base_size = scaled_base_size, base_family = base_family),
+      minimal = theme_minimal(base_size = scaled_base_size, base_family = base_family),
+      classic = theme_classic(base_size = scaled_base_size, base_family = base_family),
+      void = theme_void(base_size = scaled_base_size, base_family = base_family),
+      theme_classic(base_size = scaled_base_size, base_family = base_family)
     )
 
-    p <- ggplot() +
-      geom_col(
-        data = summary,
-        aes(x = Sample, y = mean_fold, color = Sample),
-        width = 0.55,
-        fill = "white",
-        linewidth = 0.7
-      ) +
-      geom_errorbar(
-        data = summary,
-        aes(
-          x = Sample,
-          ymin = mean_fold - se_fold,
-          ymax = mean_fold + se_fold,
-          color = Sample
-        ),
-        width = 0.2,
-        linewidth = 0.6
-      )
+    bar_width <- if (paper_ready) 0.45 else 0.55
+    bar_line_width <- (if (paper_ready) 0.4 else 0.7) * size_scale
+    errorbar_line_width <- (if (paper_ready) 0.5 else 0.6) * size_scale
+    panel_fill <- "white"
 
-    if (isTRUE(input$show_points)) {
-      p <- p +
-        geom_jitter(
-          data = points,
-          aes(x = Sample, y = fold_change, color = Sample),
-          width = input$jitter_width,
-          shape = 16,
-          size = input$point_size
+    if (paper_ready) {
+      p <- ggplot() +
+        geom_col(
+          data = summary,
+          aes(x = Sample, y = mean_fold, fill = bar_fill),
+          width = bar_width,
+          color = "black",
+          linewidth = bar_line_width
+        ) +
+        geom_errorbar(
+          data = summary,
+          aes(
+            x = Sample,
+            ymin = mean_fold - se_fold,
+            ymax = mean_fold + se_fold
+          ),
+          width = 0.2,
+          linewidth = errorbar_line_width,
+          color = "black"
+        )
+    } else {
+      p <- ggplot() +
+        geom_col(
+          data = summary,
+          aes(x = Sample, y = mean_fold, color = Sample),
+          width = bar_width,
+          fill = "white",
+          linewidth = bar_line_width
+        ) +
+        geom_errorbar(
+          data = summary,
+          aes(
+            x = Sample,
+            ymin = mean_fold - se_fold,
+            ymax = mean_fold + se_fold,
+            color = Sample
+          ),
+          width = 0.2,
+          linewidth = errorbar_line_width
         )
     }
 
+    if (isTRUE(input$show_points)) {
+      jitter_width <- input$jitter_width
+      if (paper_ready) {
+        if (paper_ready_2) {
+          p <- p +
+            geom_point(
+              data = points,
+              aes(
+                x = Sample,
+                y = fold_change,
+                shape = Sample
+              ),
+              position = position_jitterdodge(
+                jitter.width = jitter_width,
+                dodge.width = 0.55
+              ),
+              size = scaled_point_size,
+              stroke = scaled_stroke,
+              color = "black",
+              fill = "white"
+            )
+        } else {
+          p <- p +
+            geom_point(
+              data = points,
+              aes(
+                x = Sample,
+                y = fold_change,
+                fill = point_fill
+              ),
+              position = position_jitterdodge(
+                jitter.width = jitter_width,
+                dodge.width = 0.55
+              ),
+              shape = 21,
+              size = scaled_point_size,
+              stroke = scaled_stroke,
+              color = "black"
+            )
+        }
+      } else {
+        p <- p +
+          geom_jitter(
+            data = points,
+            aes(x = Sample, y = fold_change, color = Sample),
+            width = jitter_width,
+            height = 0,
+            shape = 16,
+            size = scaled_point_size
+          )
+      }
+    }
+
+    facet_formals <- names(formals(ggplot2::facet_wrap))
+    facet_layer <- if ("axes" %in% facet_formals) {
+      ggplot2::facet_wrap(~Target, scales = "free_y", axes = "all")
+    } else if ("axis" %in% facet_formals) {
+      ggplot2::facet_wrap(~Target, scales = "free_y", axis = "all")
+    } else if (requireNamespace("ggh4x", quietly = TRUE)) {
+      ggh4x::facet_wrap2(~Target, scales = "free_y", axes = "all", remove_labels = "none")
+    } else {
+      ggplot2::facet_wrap(~Target, scales = "free_y")
+    }
+
     p <- p +
-      facet_wrap(~Target, scales = "free_y") +
+      facet_layer +
       scale_x_discrete(expand = expansion(mult = c(input$x_expand, input$x_expand))) +
-      scale_color_manual(values = color_values, drop = FALSE) +
       coord_cartesian(ylim = y_limits, clip = "off") +
       labs(
         x = "Sample",
-        y = "Fold change (2^-DeltaDelta Cq)"
+        y = expression("Fold Change ("*2^{-Delta*Delta*Cq}*")")
       ) +
       theme_base +
       theme(
         legend.position = if (isTRUE(input$legend_on)) "right" else "none",
-        panel.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = panel_fill, color = NA),
         plot.background = element_rect(fill = "white", color = NA),
-        axis.line = element_line(color = "#222222", linewidth = 0.4),
+        axis.line = element_line(color = axis_color, linewidth = axis_line_width),
         axis.ticks.x = x_ticks,
-        axis.ticks.y = element_line(color = "#222222", linewidth = 0.4),
+        axis.ticks.y = element_line(color = axis_color, linewidth = axis_line_width),
         axis.text.x = x_text,
-        axis.text.y = element_text(color = "#222222"),
-        axis.title = element_text(color = "#222222"),
+        axis.text.y = element_text(color = axis_color),
+        axis.title = element_text(color = axis_color),
         panel.spacing = grid::unit(input$facet_spacing, "lines"),
         aspect.ratio = input$plot_aspect,
         strip.background = element_blank(),
         strip.text = element_text(face = "bold")
       )
+
+    if (paper_ready) {
+      p <- p + scale_fill_identity(guide = "none")
+    } else {
+      p <- p + scale_color_manual(values = color_values, drop = FALSE)
+    }
+
+    if (paper_ready_2) {
+      shape_values <- rep(c(21, 22, 23, 24, 25), length.out = length(sample_levels))
+      p <- p + scale_shape_manual(values = setNames(shape_values, sample_levels))
+    }
+
+    if (paper_ready) {
+      p <- p + theme(
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+      )
+    }
+
+    if (paper_ready) {
+      # no significance brackets or asterisks
+    }
 
     if (isTRUE(input$log_scale)) {
       p <- p + scale_y_continuous(trans = "log2")
@@ -1064,62 +1533,299 @@ server <- function(input, output, session) {
 
   output$fold_plot <- renderPlot({
     plot_object()
-  }, height = function() input$plot_height)
-
-  output$download_plot_png <- downloadHandler(
-    filename = function() {
-      paste0("qpcr_plot_", Sys.Date(), ".png")
-    },
-    content = function(file) {
-      p <- plot_object()
-      ggsave(
-        file,
-        plot = p,
-        width = input$download_width,
-        height = input$download_height,
-        units = "in",
-        dpi = input$download_dpi
-      )
+  },
+  width = function() {
+    scale_val <- suppressWarnings(as.numeric(input$export_quality))
+    if (!is.finite(scale_val) || scale_val <= 0) {
+      scale_val <- 1
     }
-  )
-
-  output$download_plot_pdf <- downloadHandler(
-    filename = function() {
-      paste0("qpcr_plot_", Sys.Date(), ".pdf")
-    },
-    content = function(file) {
-      p <- plot_object()
-      ggsave(
-        file,
-        plot = p,
-        width = input$download_width,
-        height = input$download_height,
-        units = "in",
-        device = "pdf"
-      )
+    base_width <- session$clientData$output_fold_plot_width
+    if (is.null(base_width) || !is.finite(base_width) || base_width <= 0) {
+      base_width <- 800
     }
-  )
+    base_width * scale_val
+  },
+  height = function() {
+    scale_val <- suppressWarnings(as.numeric(input$export_quality))
+    if (!is.finite(scale_val) || scale_val <= 0) {
+      scale_val <- 1
+    }
+    base_height <- input$plot_height
+    if (is.null(base_height) || !is.finite(base_height) || base_height <= 0) {
+      base_height <- 500
+    }
+    base_height * scale_val
+  })
 
-  output$download_plot_svg <- downloadHandler(
-    filename = function() {
-      paste0("qpcr_plot_", Sys.Date(), ".svg")
-    },
-    content = function(file) {
-      if (!requireNamespace("svglite", quietly = TRUE)) {
-        stop("Package 'svglite' is required for SVG export.")
+  output$plot_ui <- renderUI({
+    plotOutput("fold_plot", height = input$plot_height)
+  })
+
+  # Client-side downloads are handled in JavaScript for Shinylive compatibility.
+
+  output$plot_code <- renderText({
+    summary_state <- filtered_summary()
+    points_state <- filtered_points()
+    if (!summary_state$ok || !points_state$ok) {
+      return("Plot code will appear once valid data is available.")
+    }
+    summary <- summary_state$data
+    points <- points_state$data
+    if (!nrow(summary)) {
+      return("Plot code will appear once valid data is available.")
+    }
+
+    preset_choice <- preset_style()
+    paper_ready <- !is.null(preset_choice) && preset_choice %in% c("paper_ready_1", "paper_ready_2", "paper_ready_3")
+    paper_ready_2 <- identical(preset_choice, "paper_ready_2")
+    paper_ready_3 <- identical(preset_choice, "paper_ready_3")
+    size_scale <- suppressWarnings(as.numeric(input$export_quality))
+    if (!is.finite(size_scale) || size_scale <= 0) {
+      size_scale <- 1
+    }
+
+    sample_levels <- sample_order_state()
+    if (!length(sample_levels)) {
+      sample_levels <- as.character(sort(unique(summary$Sample)))
+    }
+    if (length(sample_levels)) {
+      summary <- summary[as.character(summary$Sample) %in% sample_levels, , drop = FALSE]
+      points <- points[as.character(points$Sample) %in% sample_levels, , drop = FALSE]
+    }
+    summary$Sample <- factor(as.character(summary$Sample), levels = sample_levels)
+    points$Sample <- factor(as.character(points$Sample), levels = sample_levels)
+
+    manual_colors <- parse_manual_colors(input$manual_palette)
+    palette_values <- get_palette(input$palette_choice, length(sample_levels), manual_colors)
+    color_values <- setNames(palette_values, sample_levels)
+    fill_values <- color_values
+    point_fill_values <- NULL
+    if (paper_ready) {
+      fill_values <- setNames(as.character(color_values), sample_levels)
+      if (paper_ready_3) {
+        fill_values[] <- "#ffffff"
       }
-      p <- plot_object()
-      svglite::svglite(
-        file,
-        width = input$download_width,
-        height = input$download_height,
-        bg = "white",
-        useDingbats = FALSE
-      )
-      print(p)
-      grDevices::dev.off()
+      point_base_colors <- if (paper_ready_3) color_values else fill_values
+      point_fill_values <- setNames(darken_hex(point_base_colors, factor = 0.7), sample_levels)
+      if (paper_ready_2) {
+        point_fill_values[] <- "#ffffff"
+      }
+      summary$bar_fill <- fill_values[as.character(summary$Sample)]
+      points$point_fill <- point_fill_values[as.character(points$Sample)]
     }
-  )
+
+    axis_color <- if (paper_ready) "#000000" else "#222222"
+    axis_line_width <- (if (paper_ready) 0.7 else 0.4) * size_scale
+    bar_width <- if (paper_ready) 0.45 else 0.55
+    bar_line_width <- (if (paper_ready) 0.4 else 0.7) * size_scale
+    errorbar_line_width <- (if (paper_ready) 0.5 else 0.6) * size_scale
+    point_size <- input$point_size * size_scale
+    point_stroke <- 0.5 * size_scale
+    jitter_width <- input$jitter_width
+    x_expand <- input$x_expand
+    facet_spacing <- input$facet_spacing
+    aspect_ratio <- input$plot_aspect
+    base_size <- input$base_font_size * size_scale
+    angle <- if (isTRUE(input$rotate_x_labels)) input$x_label_angle else 0
+
+    quote_name <- function(nm) {
+      if (is.null(nm) || !nzchar(nm)) {
+        return("``")
+      }
+      if (make.names(nm) != nm || grepl("[^A-Za-z0-9_.]", nm)) {
+        paste0("`", nm, "`")
+      } else {
+        nm
+      }
+    }
+    vec_to_r <- function(x) {
+      if (is.null(x) || !length(x)) {
+        return("character(0)")
+      }
+      vals <- paste(sprintf("\"%s\"", x), collapse = ", ")
+      paste0("c(", vals, ")")
+    }
+    named_vec_to_r <- function(x) {
+      if (is.null(x) || !length(x)) {
+        return("character(0)")
+      }
+      parts <- mapply(
+        function(nm, val) paste0(quote_name(nm), " = \"", val, "\""),
+        names(x),
+        x,
+        SIMPLIFY = TRUE,
+        USE.NAMES = FALSE
+      )
+      paste0("c(", paste(parts, collapse = ", "), ")")
+    }
+
+    summary_code <- capture.output(dput(summary))
+    points_code <- capture.output(dput(points))
+
+    theme_line <- switch(
+      input$theme_choice,
+      gray = "theme_gray",
+      bw = "theme_bw",
+      linedraw = "theme_linedraw",
+      light = "theme_light",
+      dark = "theme_dark",
+      minimal = "theme_minimal",
+      classic = "theme_classic",
+      void = "theme_void",
+      "theme_classic"
+    )
+
+    legend_position <- if (isTRUE(input$legend_on)) "right" else "none"
+    dodge_width <- 0.55
+
+    code <- c(
+      "library(ggplot2)",
+      "",
+      "summary_df <-",
+      summary_code,
+      "",
+      "points_df <-",
+      points_code,
+      "",
+      "# ---- Tuning parameters ----",
+      sprintf("base_size <- %.2f", base_size),
+      sprintf("axis_line_width <- %.2f", axis_line_width),
+      sprintf("bar_width <- %.2f", bar_width),
+      sprintf("bar_line_width <- %.2f", bar_line_width),
+      sprintf("errorbar_line_width <- %.2f", errorbar_line_width),
+      sprintf("point_size <- %.2f", point_size),
+      sprintf("point_stroke <- %.2f", point_stroke),
+      sprintf("jitter_width <- %.2f", jitter_width),
+      sprintf("dodge_width <- %.2f", dodge_width),
+      sprintf("x_expand <- %.2f", x_expand),
+      sprintf("facet_spacing <- %.2f", facet_spacing),
+      sprintf("aspect_ratio <- %.2f", aspect_ratio),
+      sprintf("axis_color <- \"%s\"", axis_color),
+      sprintf("x_label_angle <- %d", angle),
+      sprintf("legend_position <- \"%s\"", legend_position),
+      "# ---------------------------",
+      "",
+      paste0("sample_levels <- ", vec_to_r(sample_levels)),
+      "summary_df$Sample <- factor(summary_df$Sample, levels = sample_levels)",
+      "points_df$Sample <- factor(points_df$Sample, levels = sample_levels)",
+      paste0("color_values <- ", named_vec_to_r(color_values))
+    )
+
+    if (paper_ready) {
+      code <- c(
+        code,
+        paste0("fill_values <- ", named_vec_to_r(fill_values)),
+        "summary_df$bar_fill <- fill_values[as.character(summary_df$Sample)]",
+        paste0("point_fill_values <- ", named_vec_to_r(point_fill_values)),
+        "points_df$point_fill <- point_fill_values[as.character(points_df$Sample)]"
+      )
+    }
+
+    code <- c(
+      code,
+      "",
+      "p <- ggplot() +"
+    )
+
+    if (paper_ready) {
+      code <- c(
+        code,
+        sprintf(
+          "  geom_col(data = summary_df, aes(x = Sample, y = mean_fold, fill = bar_fill), width = bar_width, color = \"black\", linewidth = bar_line_width) +"
+        ),
+        sprintf(
+          "  geom_errorbar(data = summary_df, aes(x = Sample, ymin = mean_fold - se_fold, ymax = mean_fold + se_fold), width = 0.2, linewidth = errorbar_line_width, color = \"black\") +"
+        )
+      )
+    } else {
+      code <- c(
+        code,
+        sprintf(
+          "  geom_col(data = summary_df, aes(x = Sample, y = mean_fold, color = Sample), width = bar_width, fill = \"white\", linewidth = bar_line_width) +"
+        ),
+        sprintf(
+          "  geom_errorbar(data = summary_df, aes(x = Sample, ymin = mean_fold - se_fold, ymax = mean_fold + se_fold, color = Sample), width = 0.2, linewidth = errorbar_line_width) +"
+        )
+      )
+    }
+
+    if (isTRUE(input$show_points)) {
+      if (paper_ready) {
+        if (paper_ready_2) {
+          code <- c(
+            code,
+            sprintf(
+              "  geom_point(data = points_df, aes(x = Sample, y = fold_change, shape = Sample), position = position_jitterdodge(jitter.width = jitter_width, dodge.width = dodge_width), size = point_size, stroke = point_stroke, color = \"black\", fill = \"white\") +"
+            )
+          )
+        } else {
+          code <- c(
+            code,
+            sprintf(
+              "  geom_point(data = points_df, aes(x = Sample, y = fold_change, fill = point_fill), position = position_jitterdodge(jitter.width = jitter_width, dodge.width = dodge_width), shape = 21, size = point_size, stroke = point_stroke, color = \"black\") +"
+            )
+          )
+        }
+      } else {
+        code <- c(
+          code,
+          sprintf(
+            "  geom_jitter(data = points_df, aes(x = Sample, y = fold_change, color = Sample), width = jitter_width, height = 0, shape = 16, size = point_size) +"
+          )
+        )
+      }
+    }
+
+    x_text_code <- if (isTRUE(input$show_sample_labels)) {
+      sprintf("element_text(color = axis_color, angle = x_label_angle, hjust = %s)", if (angle > 0) "1" else "0.5")
+    } else {
+      "element_blank()"
+    }
+    x_ticks_code <- if (isTRUE(input$show_sample_labels)) {
+      "element_line(color = axis_color, linewidth = axis_line_width)"
+    } else {
+      "element_blank()"
+    }
+
+    code <- c(
+      code,
+      sprintf("  facet_wrap(~Target, scales = \"free_y\") +"),
+      "  scale_x_discrete(expand = expansion(mult = c(x_expand, x_expand))) +",
+      "  coord_cartesian(clip = \"off\") +",
+      "  labs(x = \"Sample\", y = expression(\"Fold Change (\"*2^{-Delta*Delta*Cq}*\")\")) +",
+      sprintf("  %s(base_size = base_size, base_family = \"sans\") +", theme_line),
+      sprintf("  theme(legend.position = legend_position, axis.line = element_line(color = axis_color, linewidth = axis_line_width), axis.ticks.x = %s, axis.ticks.y = element_line(color = axis_color, linewidth = axis_line_width), axis.text.x = %s, axis.text.y = element_text(color = axis_color), axis.title = element_text(color = axis_color), panel.spacing = grid::unit(facet_spacing, \"lines\"), aspect.ratio = aspect_ratio, strip.background = element_blank(), strip.text = element_text(face = \"bold\"))",
+              x_ticks_code,
+              x_text_code
+      )
+    )
+
+    if (paper_ready) {
+      code <- c(code, "p <- p + scale_fill_identity(guide = \"none\")")
+    } else {
+      code <- c(code, paste0("p <- p + scale_color_manual(values = ", named_vec_to_r(color_values), ", drop = FALSE)"))
+    }
+
+    if (paper_ready_2) {
+      shape_values <- rep(c(21, 22, 23, 24, 25), length.out = length(sample_levels))
+      code <- c(code, paste0("p <- p + scale_shape_manual(values = ", named_vec_to_r(setNames(shape_values, sample_levels)), ")"))
+    }
+
+    if (paper_ready) {
+      code <- c(code, "p <- p + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())")
+    }
+
+    if (isTRUE(input$log_scale)) {
+      code <- c(code, "p <- p + scale_y_continuous(trans = \"log2\")")
+    } else if (identical(input$y_limit_mode, "manual")) {
+      code <- c(code, sprintf("p <- p + scale_y_continuous(expand = c(0, 0), limits = c(%.4f, %.4f))", input$y_min, input$y_max))
+    } else {
+      code <- c(code, "p <- p + scale_y_continuous(expand = c(0, 0), limits = c(0, NA))")
+    }
+
+    code <- c(code, "", "p")
+    paste(code, collapse = "\n")
+  })
 
   output$summary_table <- renderDT({
     summary_state <- summary_all()
@@ -1154,6 +1860,14 @@ server <- function(input, output, session) {
       return(tags$div(class = "text-danger", "No summary rows are available to display."))
     }
     NULL
+  })
+
+  output$data_error <- renderUI({
+    msg <- data_error_msg()
+    if (is.null(msg) || !nzchar(msg)) {
+      return(NULL)
+    }
+    tags$div(class = "text-danger", msg)
   })
 
   output$manual_cq_table <- renderRHandsontable({
